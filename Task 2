@@ -1,0 +1,165 @@
+/*
+ * SEDS BPHC - AVIONICS INDUCTION TASK 2
+ * Odysseus Navigation State Machine
+ */
+
+#include <LiquidCrystal.h>
+
+// LCD pin setup: RS, E, D4, D5, D6, D7
+LiquidCrystal lcd(7, 6, 5, 4, 3, 10);
+
+const int TRIG_PIN   = 9;
+const int ECHO_PIN   = 8;
+const int LDR_PIN    = A0;
+const int BUTTON_PIN = 2;
+const int BUZZER_PIN = 11;
+const int LED_PIN    = 12;
+
+const int DISTANCE_THRESHOLD = 100; // Under 100 cm triggers Charybdis
+const int LIGHT_THRESHOLD    = 512;// Below 512 triggers Storm (Dark)
+
+// States: 0=OPEN_SEA, 1=STORM, 2=CHARYBDIS, 3=ANCHOR_DROPPED, 4=WRECKED
+int currentState = 0;
+
+unsigned long startTime     = 0;
+unsigned long lastBlinkTime = 0;
+unsigned long lastPress     = 0;
+int ledState                = LOW;
+bool anchorActive           = false;
+int lastButtonState         = HIGH; // HIGH when unpressed (INPUT_PULLUP)
+
+void setup() {
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  lcd.begin(16, 2);
+  lcd.print("ODYSSEUS NAV");
+  lcd.setCursor(0, 1);
+  lcd.print("System Ready");
+  delay(1000);
+  lcd.clear();
+}
+
+void loop() {
+  // 1. Read Inputs
+  int lightVal = analogRead(LDR_PIN);
+  
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH, 20000);
+  int distVal = (duration == 0) ? 400 : (duration * 0.0343 / 2);
+
+  // Button toggle logic (INPUT_PULLUP goes LOW on press)
+  int currentButton = digitalRead(BUTTON_PIN);
+  if (currentButton == LOW && lastButtonState == HIGH && (millis() - lastPress > 250)) {
+    anchorActive = !anchorActive;
+    lastPress = millis();
+  }
+  lastButtonState = currentButton;
+
+  // Hazard conditions
+  bool stormCondition     = (lightVal > LIGHT_THRESHOLD);
+  bool charybdisCondition = (distVal > 0 && distVal < DISTANCE_THRESHOLD);
+
+  // 2. State Machine Logic
+  if (currentState != 4) { // Unless permanently WRECKED
+
+    // Anchor override (Absolute priority)
+    if (anchorActive) {
+      currentState = 3;
+      startTime = 0;
+    }
+    // STORM Latch: Stays active until clear
+    else if (currentState == 1) {
+      if (!stormCondition) {
+        currentState = 0;
+        startTime = 0;
+      }
+    }
+    // CHARYBDIS Latch: Stays active until clear
+    else if (currentState == 2) {
+      if (!charybdisCondition) {
+        currentState = 0;
+        startTime = 0;
+      }
+    }
+    // OPEN SEA: Triggers whichever hazard happens first
+    else {
+      if (stormCondition) {
+        currentState = 1;
+        startTime = millis();
+      } 
+      else if (charybdisCondition) {
+        currentState = 2;
+        startTime = millis();
+      } 
+      else {
+        currentState = 0;
+        startTime = 0;
+      }
+    }
+
+    // 5-Second Timer Check
+    if ((currentState == 1 || currentState == 2) && startTime > 0) {
+      if (millis() - startTime >= 5000) {
+        currentState = 4; // WRECKED
+      }
+    }
+  }
+
+  // 3. Display & Outputs
+  lcd.setCursor(0, 0);
+
+  if (currentState == 0) { // OPEN SEA
+    lcd.print("STATE: OPEN SEA ");
+    lcd.setCursor(0, 1);
+    lcd.print("Status: Normal  ");
+    digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
+  }
+  else if (currentState == 1) { // STORM
+    lcd.print("STATE: STORM    ");
+    lcd.setCursor(0, 1);
+    lcd.print("Timer: ");
+    lcd.print(5 - (millis() - startTime) / 1000);
+    lcd.print("s left  ");
+
+    noTone(BUZZER_PIN);
+    if (millis() - lastBlinkTime >= 200) {
+      lastBlinkTime = millis();
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState);
+    }
+  }
+  else if (currentState == 2) { // CHARYBDIS
+    lcd.print("STATE: CHARYBDIS");
+    lcd.setCursor(0, 1);
+    lcd.print("Timer: ");
+    lcd.print(5 - (millis() - startTime) / 1000);
+    lcd.print("s left  "); 
+    digitalWrite(LED_PIN, LOW);
+    tone(BUZZER_PIN, 800);
+  }
+  else if (currentState == 3) { // ANCHOR DROPPED
+    lcd.print("STATE: ANCHORED ");
+    lcd.setCursor(0, 1);
+    lcd.print("Status: Safe    ");
+    digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
+  }
+  else if (currentState == 4) { // WRECKED
+    lcd.print("STATE: WRECKED  ");
+    lcd.setCursor(0, 1);
+    lcd.print("SHIP DESTROYED! ");
+    digitalWrite(LED_PIN, HIGH);
+    tone(BUZZER_PIN, 200);
+  }
+
+  delay(30);
+} 
